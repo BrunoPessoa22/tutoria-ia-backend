@@ -1,5 +1,6 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Body
 from fastapi.middleware.cors import CORSMiddleware
+from typing import Optional
 import os
 
 # Create FastAPI app
@@ -43,12 +44,12 @@ async def health_check():
 
 # Voice generation endpoint
 @app.post("/api/voice/generate")
-async def generate_voice(request: dict):
+async def generate_voice(
+    text: str = Body(..., embed=True),
+    voice_id: Optional[str] = Body("EXAVITQu4vr4xnSDxMaL", embed=True)
+):
     """Generate voice using ElevenLabs API."""
     import httpx
-
-    text = request.get("text", "")
-    voice_id = request.get("voice_id", "EXAVITQu4vr4xnSDxMaL")
 
     elevenlabs_key = os.getenv("ELEVENLABS_API_KEY")
     if not elevenlabs_key:
@@ -79,11 +80,9 @@ async def generate_voice(request: dict):
 
 # Claude chat endpoint
 @app.post("/api/tutoring/chat")
-async def chat(request: dict):
+async def chat(message: str = Body(..., embed=True)):
     """Chat with Claude AI tutor."""
     from anthropic import Anthropic
-
-    message = request.get("message", "")
 
     anthropic_key = os.getenv("ANTHROPIC_API_KEY")
     if not anthropic_key:
