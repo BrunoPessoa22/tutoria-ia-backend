@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: tutoria-ia-backend
+    runtime: python
+    repo: https://github.com/BrunoPessoa22/tutoria-ia-backend
+    branch: main
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11"
+      - key: DATABASE_URL
+        generateValue: true
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: ELEVENLABS_API_KEY
+        sync: false
+      - key: CORS_ALLOWED_ORIGINS
+        value: "https://tutoria-ia.vercel.app,http://localhost:3000,http://localhost:3001"
