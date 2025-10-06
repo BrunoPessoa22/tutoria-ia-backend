@@ -63,14 +63,20 @@ async def generate_voice(
         "xi-api-key": elevenlabs_key,
         "Content-Type": "application/json"
     }
+    # Add natural pauses for better teaching rhythm
+    text_with_pauses = text.replace('. ', '.<break time="600ms"/> ')
+    text_with_pauses = text_with_pauses.replace('? ', '?<break time="800ms"/> ')
+    text_with_pauses = text_with_pauses.replace('! ', '!<break time="600ms"/> ')
+
     data = {
-        "text": text[:1000],  # Increased limit for better flow
+        "text": text_with_pauses[:1200],  # Increased limit for pauses
         "model_id": "eleven_turbo_v2_5",  # Much faster generation
         "voice_settings": {
-            "stability": 0.6,  # Slightly more stable for teaching
+            "stability": 0.65,  # Slightly more stable for teaching
             "similarity_boost": 0.8,  # More natural
-            "style": 0.3,  # Add expressiveness
-            "use_speaker_boost": True  # Better clarity
+            "style": 0.35,  # Add expressiveness
+            "use_speaker_boost": True,  # Better clarity
+            "speaking_rate": 0.85  # Slow down 15% for natural pacing
         }
     }
 
