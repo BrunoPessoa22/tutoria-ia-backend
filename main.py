@@ -34,12 +34,14 @@ async def root():
 @app.get("/health")
 async def health_check():
     """Health check endpoint for monitoring."""
+    elevenlabs_key = os.getenv("ELEVENLABS_API_KEY", "")
     return {
         "status": "healthy",
         "environment": os.getenv("ENVIRONMENT", "production"),
         "version": "1.0.0",
         "anthropic_configured": bool(os.getenv("ANTHROPIC_API_KEY")),
-        "elevenlabs_configured": bool(os.getenv("ELEVENLABS_API_KEY"))
+        "elevenlabs_configured": bool(elevenlabs_key),
+        "elevenlabs_key_preview": f"{elevenlabs_key[:8]}...{elevenlabs_key[-4:]}" if elevenlabs_key else "NOT_SET"
     }
 
 # Voice generation endpoint
