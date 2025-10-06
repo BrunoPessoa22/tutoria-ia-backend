@@ -1,7 +1,10 @@
-from fastapi import FastAPI, Body
+from fastapi import FastAPI, Body, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional
 import os
+import json
+import asyncio
+import websockets
 from curriculum import get_curriculum, get_level, get_placement_test
 
 # Create FastAPI app
@@ -253,6 +256,192 @@ async def evaluate_placement(
         "recommended_level": level,
         "level_details": recommended_level
     }
+
+# WebSocket endpoint for real-time conversation
+@app.websocket("/ws/conversation")
+async def websocket_conversation(websocket: WebSocket):
+    """Real-time conversational tutoring with streaming audio."""
+    await websocket.accept()
+
+    elevenlabs_key = os.getenv("ELEVENLABS_API_KEY")
+    anthropic_key = os.getenv("ANTHROPIC_API_KEY")
+
+    if not elevenlabs_key or not anthropic_key:
+        await websocket.send_json({"error": "API keys not configured"})
+        await websocket.close()
+        return
+
+    try:
+        while True:
+            # Receive message from frontend
+            data = await websocket.receive_json()
+
+            message_type = data.get("type")
+
+            if message_type == "chat":
+                # Get student message and context
+                message = data.get("message", "")
+                conversation_history = data.get("conversation_history", [])
+                student_level = data.get("student_level", "0")
+                lesson_number = data.get("lesson_number", 1)
+                voice_id = data.get("voice_id", "J7NSF1cIlVrVyE8KOute")
+
+                # 1. Generate AI response with Claude
+                from anthropic import Anthropic
+                client = Anthropic(api_key=anthropic_key)
+
+                # Get curriculum context (same as existing chat endpoint)
+                from curriculum import get_level
+                level_data = get_level(int(student_level))
+                if not level_data:
+                    level_data = get_level(0)
+
+                level_name = level_data.get('name', 'Fundamentos de IA')
+                modules = level_data.get('modules', [])
+                learning_objectives = level_data.get('learning_objectives', [])
+
+                all_lessons = []
+                for module in modules:
+                    for lesson in module.get('lessons', []):
+                        all_lessons.append({
+                            'module': module['title'],
+                            'lesson': lesson
+                        })
+
+                current_lesson_index = min(lesson_number - 1, len(all_lessons) - 1)
+                current_lesson = all_lessons[current_lesson_index] if all_lessons else {
+                    'module': 'Introdução',
+                    'lesson': 'Fundamentos de IA'
+                }
+
+                system_prompt = """Você é o Professor Caio, um professor brasileiro de IA que ENSINA CONTEÚDO ESTRUTURADO.
+
+SEU PAPEL:
+Você NÃO é um chatbot conversacional genérico. Você é um PROFESSOR com um PLANO DE AULA específico.
+
+CONTEÚDO ATUAL DA AULA:
+Nível: {level_name}
+Módulo: {module_name}
+Lição {lesson_num}: {lesson_name}
+
+Objetivos de aprendizagem deste nível:
+{objectives}
+
+INSTRUÇÕES IMPORTANTES:
+1. SEMPRE comece explicando o tópico da lição atual
+2. NÃO pergunte "o que você já sabe" - ENSINE o conteúdo
+3. Use exemplos brasileiros concretos (Magazine Luiza, Nubank, iFood)
+4. Depois de explicar, faça UMA pergunta para verificar compreensão
+5. Se o aluno responder, dê feedback E continue ensinando o próximo ponto
+6. Mantenha foco no CONTEÚDO da lição, não em conversa genérica
+
+FORMATO DA PRIMEIRA MENSAGEM:
+"Oi! Vamos começar nossa aula sobre [TÓPICO]. Hoje você vai aprender [OBJETIVO].
+
+[EXPLICAÇÃO DO CONCEITO com exemplo brasileiro]
+
+[PERGUNTA para verificar entendimento]"
+
+IMPORTANTE: Seja direto e didático. O aluno já fez o teste de nivelamento. Vá direto ao conteúdo da aula.
+
+Mantenha explicações em 3-5 frases. Após explicar um ponto, pergunte algo específico sobre o que acabou de ensinar.""".format(
+                    level_name=level_name,
+                    module_name=current_lesson['module'],
+                    lesson_num=lesson_number,
+                    lesson_name=current_lesson['lesson'],
+                    objectives="\n".join(f"- {obj}" for obj in learning_objectives[:3])
+                )
+
+                # Build messages
+                messages = []
+                for msg in conversation_history:
+                    messages.append({
+                        "role": msg["role"],
+                        "content": msg["content"]
+                    })
+
+                messages.append({
+                    "role": "user",
+                    "content": message
+                })
+
+                # Generate response
+                response = client.messages.create(
+                    model="claude-3-5-sonnet-20241022",
+                    max_tokens=500,
+                    system=system_prompt,
+                    messages=messages
+                )
+
+                assistant_text = response.content[0].text
+
+                # Send transcript to frontend
+                await websocket.send_json({
+                    "type": "transcript",
+                    "text": assistant_text
+                })
+
+                # 2. Stream audio from ElevenLabs WebSocket
+                elevenlabs_url = f"wss://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream-input?model_id=eleven_flash_v2_5"
+
+                async with websockets.connect(elevenlabs_url) as elevenlabs_ws:
+                    # Send initial configuration
+                    await elevenlabs_ws.send(json.dumps({
+                        "text": " ",
+                        "voice_settings": {
+                            "stability": 0.65,
+                            "similarity_boost": 0.8,
+                            "style": 0.35,
+                            "use_speaker_boost": True
+                        },
+                        "xi_api_key": elevenlabs_key
+                    }))
+
+                    # Add natural pauses
+                    text_with_pauses = assistant_text.replace('. ', '.<break time="600ms"/> ')
+                    text_with_pauses = text_with_pauses.replace('? ', '?<break time="800ms"/> ')
+                    text_with_pauses = text_with_pauses.replace('! ', '!<break time="600ms"/> ')
+
+                    # Send text to generate
+                    await elevenlabs_ws.send(json.dumps({
+                        "text": text_with_pauses[:1200],
+                        "flush": True
+                    }))
+
+                    # Stream audio chunks to frontend
+                    try:
+                        while True:
+                            response_data = await asyncio.wait_for(elevenlabs_ws.recv(), timeout=30.0)
+                            response_json = json.loads(response_data)
+
+                            if response_json.get("audio"):
+                                # Forward audio chunk to frontend
+                                await websocket.send_json({
+                                    "type": "audio",
+                                    "audio": response_json["audio"]
+                                })
+
+                            if response_json.get("isFinal"):
+                                break
+
+                    except asyncio.TimeoutError:
+                        await websocket.send_json({"type": "error", "message": "Audio generation timeout"})
+
+                    # Signal audio complete
+                    await websocket.send_json({"type": "audio_complete"})
+
+            elif message_type == "ping":
+                # Keep-alive
+                await websocket.send_json({"type": "pong"})
+
+    except WebSocketDisconnect:
+        print("Client disconnected")
+    except Exception as e:
+        print(f"WebSocket error: {e}")
+        try:
+            await websocket.send_json({"type": "error", "message": str(e)})
+        except:
+            pass
 
 if __name__ == "__main__":
     import uvicorn
