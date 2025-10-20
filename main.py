@@ -7,6 +7,15 @@ import asyncio
 from dotenv import load_dotenv
 from curriculum import get_curriculum, get_level, get_placement_test
 
+# Phase 3: Database and Auth
+try:
+    from database import init_db
+    from api.progress import router as progress_router
+    PHASE_3_ENABLED = True
+except ImportError:
+    PHASE_3_ENABLED = False
+    print("Phase 3 modules not available, running without database")
+
 # Load environment variables
 load_dotenv()
 
@@ -25,6 +34,16 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Phase 3: Initialize database on startup
+if PHASE_3_ENABLED:
+    @app.on_event("startup")
+    async def startup():
+        await init_db()
+        print("✅ Database initialized")
+
+    # Include Progress API routes
+    app.include_router(progress_router)
 
 # Health check endpoint
 @app.get("/")
