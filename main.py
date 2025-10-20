@@ -4,8 +4,11 @@ from typing import Optional
 import os
 import json
 import asyncio
-import websockets
+from dotenv import load_dotenv
 from curriculum import get_curriculum, get_level, get_placement_test
+
+# Load environment variables
+load_dotenv()
 
 # Create FastAPI app
 app = FastAPI(
@@ -33,6 +36,115 @@ async def root():
         "documentation": "/docs",
         "health": "/health",
         "version": "1.0.0"
+    }
+
+@app.get("/api/analytics/questions")
+async def get_all_questions(
+    limit: int = 100,
+    level: Optional[str] = None
+):
+    """Get all student questions for analytics."""
+    import sqlite3
+
+    conn = sqlite3.connect('tutoria_analytics.db')
+    cursor = conn.cursor()
+
+    # Create table if it doesn't exist
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS student_questions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            student_level TEXT,
+            lesson_number INTEGER,
+            question TEXT NOT NULL,
+            response TEXT NOT NULL,
+            module TEXT,
+            lesson_name TEXT
+        )
+    ''')
+
+    if level:
+        cursor.execute('''
+            SELECT * FROM student_questions
+            WHERE student_level = ?
+            ORDER BY timestamp DESC
+            LIMIT ?
+        ''', (level, limit))
+    else:
+        cursor.execute('''
+            SELECT * FROM student_questions
+            ORDER BY timestamp DESC
+            LIMIT ?
+        ''', (limit,))
+
+    rows = cursor.fetchall()
+    conn.close()
+
+    questions = []
+    for row in rows:
+        questions.append({
+            "id": row[0],
+            "timestamp": row[1],
+            "student_level": row[2],
+            "lesson_number": row[3],
+            "question": row[4],
+            "response": row[5],
+            "module": row[6],
+            "lesson_name": row[7]
+        })
+
+    return {"questions": questions, "total": len(questions)}
+
+@app.get("/api/analytics/stats")
+async def get_stats():
+    """Get overall statistics."""
+    import sqlite3
+
+    conn = sqlite3.connect('tutoria_analytics.db')
+    cursor = conn.cursor()
+
+    # Create table if it doesn't exist
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS student_questions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            student_level TEXT,
+            lesson_number INTEGER,
+            question TEXT NOT NULL,
+            response TEXT NOT NULL,
+            module TEXT,
+            lesson_name TEXT
+        )
+    ''')
+
+    # Total questions
+    cursor.execute('SELECT COUNT(*) FROM student_questions')
+    total = cursor.fetchone()[0]
+
+    # Questions by level
+    cursor.execute('''
+        SELECT student_level, COUNT(*)
+        FROM student_questions
+        GROUP BY student_level
+    ''')
+    by_level = {row[0]: row[1] for row in cursor.fetchall()}
+
+    # Most common topics (by module)
+    cursor.execute('''
+        SELECT module, COUNT(*) as count
+        FROM student_questions
+        GROUP BY module
+        ORDER BY count DESC
+        LIMIT 10
+    ''')
+    top_topics = [{"module": row[0], "count": row[1]} for row in cursor.fetchall()]
+
+    conn.close()
+
+    return {
+        "total_questions": total,
+        "by_level": by_level,
+        "top_topics": top_topics
     }
 
 @app.get("/health")
@@ -134,12 +246,12 @@ async def chat(
     current_lesson = all_lessons[current_lesson_index] if all_lessons else {'module': 'Introdução', 'lesson': 'Fundamentos de IA'}
 
     # Professor Caio's personality and teaching style with STRUCTURED LESSON PLAN
-    system_prompt = """Você é o Professor Caio, um professor brasileiro de IA que ENSINA CONTEÚDO ESTRUTURADO.
+    system_prompt = """Você é o Professor Pedro, um tutor brasileiro de IA especializado em RESPONDER DÚVIDAS dos alunos.
 
 SEU PAPEL:
-Você NÃO é um chatbot conversacional genérico. Você é um PROFESSOR com um PLANO DE AULA específico.
+Você é um TUTOR SOCRÁTICO, não um palestrante. Você RESPONDE às perguntas dos alunos de forma clara e didática.
 
-CONTEÚDO ATUAL DA AULA:
+CONTEXTO DO CURRÍCULO:
 Nível: {level_name}
 Módulo: {module_name}
 Lição {lesson_num}: {lesson_name}
@@ -148,23 +260,25 @@ Objetivos de aprendizagem deste nível:
 {objectives}
 
 INSTRUÇÕES IMPORTANTES:
-1. SEMPRE comece explicando o tópico da lição atual
-2. NÃO pergunte "o que você já sabe" - ENSINE o conteúdo
-3. Use exemplos brasileiros concretos (Magazine Luiza, Nubank, iFood)
-4. Depois de explicar, faça UMA pergunta para verificar compreensão
-5. Se o aluno responder, dê feedback E continue ensinando o próximo ponto
-6. Mantenha foco no CONTEÚDO da lição, não em conversa genérica
+1. RESPONDA à pergunta do aluno de forma clara e concisa
+2. Use exemplos brasileiros concretos (Magazine Luiza, Nubank, iFood, Mercado Livre)
+3. Adapte a complexidade da resposta ao nível do aluno
+4. Se a pergunta está fora do escopo do currículo, responda mesmo assim mas conecte ao currículo
+5. Seja encorajador e motivador
+6. Mantenha respostas em 3-5 frases para facilitar a compreensão
+7. Termine perguntando se ficou claro ou se o aluno tem mais dúvidas
 
-FORMATO DA PRIMEIRA MENSAGEM:
-"Oi! Vamos começar nossa aula sobre [TÓPICO]. Hoje você vai aprender [OBJETIVO].
+FORMATO DA PRIMEIRA MENSAGEM (quando o aluno se apresenta):
+"Oi! Eu sou o Professor Pedro, seu tutor de IA. Estou aqui para responder suas dúvidas sobre {level_name}.
 
-[EXPLICAÇÃO DO CONCEITO com exemplo brasileiro]
+Pode me perguntar qualquer coisa sobre Inteligência Artificial! Como posso te ajudar hoje?"
 
-[PERGUNTA para verificar entendimento]"
+FORMATO DAS RESPOSTAS:
+[RESPOSTA CLARA E DIRETA à pergunta]
 
-IMPORTANTE: Seja direto e didático. O aluno já fez o teste de nivelamento. Vá direto ao conteúdo da aula.
+[EXEMPLO PRÁTICO brasileiro se relevante]
 
-Mantenha explicações em 3-5 frases. Após explicar um ponto, pergunte algo específico sobre o que acabou de ensinar.""".format(
+Ficou claro? Tem mais alguma dúvida?""".format(
         level_name=level_name,
         module_name=current_lesson['module'],
         lesson_num=lesson_number,
@@ -186,8 +300,8 @@ Mantenha explicações em 3-5 frases. Após explicar um ponto, pergunte algo esp
     })
 
     response = client.messages.create(
-        model="claude-3-5-sonnet-20241022",
-        max_tokens=500,  # Shorter for conversational flow
+        model="claude-sonnet-4-5-20250929",  # Using Sonnet 4.5
+        max_tokens=500,
         system=system_prompt,
         messages=messages
     )
@@ -263,11 +377,10 @@ async def websocket_conversation(websocket: WebSocket):
     """Real-time conversational tutoring with streaming audio."""
     await websocket.accept()
 
-    elevenlabs_key = os.getenv("ELEVENLABS_API_KEY")
     anthropic_key = os.getenv("ANTHROPIC_API_KEY")
 
-    if not elevenlabs_key or not anthropic_key:
-        await websocket.send_json({"error": "API keys not configured"})
+    if not anthropic_key:
+        await websocket.send_json({"error": "Anthropic API key not configured"})
         await websocket.close()
         return
 
@@ -314,12 +427,12 @@ async def websocket_conversation(websocket: WebSocket):
                     'lesson': 'Fundamentos de IA'
                 }
 
-                system_prompt = """Você é o Professor Caio, um professor brasileiro de IA que ENSINA CONTEÚDO ESTRUTURADO.
+                system_prompt = """Você é o Professor Pedro, um tutor brasileiro de IA especializado em RESPONDER DÚVIDAS dos alunos.
 
 SEU PAPEL:
-Você NÃO é um chatbot conversacional genérico. Você é um PROFESSOR com um PLANO DE AULA específico.
+Você é um TUTOR SOCRÁTICO, não um palestrante. Você RESPONDE às perguntas dos alunos de forma clara e didática.
 
-CONTEÚDO ATUAL DA AULA:
+CONTEXTO DO CURRÍCULO:
 Nível: {level_name}
 Módulo: {module_name}
 Lição {lesson_num}: {lesson_name}
@@ -328,23 +441,25 @@ Objetivos de aprendizagem deste nível:
 {objectives}
 
 INSTRUÇÕES IMPORTANTES:
-1. SEMPRE comece explicando o tópico da lição atual
-2. NÃO pergunte "o que você já sabe" - ENSINE o conteúdo
-3. Use exemplos brasileiros concretos (Magazine Luiza, Nubank, iFood)
-4. Depois de explicar, faça UMA pergunta para verificar compreensão
-5. Se o aluno responder, dê feedback E continue ensinando o próximo ponto
-6. Mantenha foco no CONTEÚDO da lição, não em conversa genérica
+1. RESPONDA à pergunta do aluno de forma clara e concisa
+2. Use exemplos brasileiros concretos (Magazine Luiza, Nubank, iFood, Mercado Livre)
+3. Adapte a complexidade da resposta ao nível do aluno
+4. Se a pergunta está fora do escopo do currículo, responda mesmo assim mas conecte ao currículo
+5. Seja encorajador e motivador
+6. Mantenha respostas em 3-5 frases para facilitar a compreensão
+7. Termine perguntando se ficou claro ou se o aluno tem mais dúvidas
 
-FORMATO DA PRIMEIRA MENSAGEM:
-"Oi! Vamos começar nossa aula sobre [TÓPICO]. Hoje você vai aprender [OBJETIVO].
+FORMATO DA PRIMEIRA MENSAGEM (quando o aluno se apresenta):
+"Oi! Eu sou o Professor Pedro, seu tutor de IA. Estou aqui para responder suas dúvidas sobre {level_name}.
 
-[EXPLICAÇÃO DO CONCEITO com exemplo brasileiro]
+Pode me perguntar qualquer coisa sobre Inteligência Artificial! Como posso te ajudar hoje?"
 
-[PERGUNTA para verificar entendimento]"
+FORMATO DAS RESPOSTAS:
+[RESPOSTA CLARA E DIRETA à pergunta]
 
-IMPORTANTE: Seja direto e didático. O aluno já fez o teste de nivelamento. Vá direto ao conteúdo da aula.
+[EXEMPLO PRÁTICO brasileiro se relevante]
 
-Mantenha explicações em 3-5 frases. Após explicar um ponto, pergunte algo específico sobre o que acabou de ensinar.""".format(
+Ficou claro? Tem mais alguma dúvida?""".format(
                     level_name=level_name,
                     module_name=current_lesson['module'],
                     lesson_num=lesson_number,
@@ -367,68 +482,64 @@ Mantenha explicações em 3-5 frases. Após explicar um ponto, pergunte algo esp
 
                 # Generate response
                 response = client.messages.create(
-                    model="claude-3-5-sonnet-20241022",
+                    model="claude-sonnet-4-5-20250929",  # Using Sonnet 4.5
                     max_tokens=500,
                     system=system_prompt,
                     messages=messages
                 )
 
+                # Store student question for analytics
+                try:
+                    from datetime import datetime
+                    import sqlite3
+
+                    conn = sqlite3.connect('tutoria_analytics.db')
+                    cursor = conn.cursor()
+
+                    # Create table if it doesn't exist
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS student_questions (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            timestamp TEXT NOT NULL,
+                            student_level TEXT,
+                            lesson_number INTEGER,
+                            question TEXT NOT NULL,
+                            response TEXT NOT NULL,
+                            module TEXT,
+                            lesson_name TEXT
+                        )
+                    ''')
+
+                    # Insert question and response
+                    cursor.execute('''
+                        INSERT INTO student_questions
+                        (timestamp, student_level, lesson_number, question, response, module, lesson_name)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        datetime.now().isoformat(),
+                        student_level,
+                        lesson_number,
+                        message,
+                        response.content[0].text,
+                        current_lesson['module'],
+                        current_lesson['lesson']
+                    ))
+
+                    conn.commit()
+                    conn.close()
+                except Exception as e:
+                    print(f"Error storing question: {e}")
+
                 assistant_text = response.content[0].text
 
-                # Send transcript to frontend
+                # Send transcript to frontend (HeyGen will handle TTS)
                 await websocket.send_json({
                     "type": "transcript",
                     "text": assistant_text
                 })
 
-                # 2. Stream audio from ElevenLabs WebSocket
-                elevenlabs_url = f"wss://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream-input?model_id=eleven_flash_v2_5"
-
-                async with websockets.connect(elevenlabs_url) as elevenlabs_ws:
-                    # Send initial configuration
-                    await elevenlabs_ws.send(json.dumps({
-                        "text": " ",
-                        "voice_settings": {
-                            "stability": 0.65,
-                            "similarity_boost": 0.8,
-                            "style": 0.35,
-                            "use_speaker_boost": True
-                        },
-                        "xi_api_key": elevenlabs_key
-                    }))
-
-                    # Add natural pauses
-                    text_with_pauses = assistant_text.replace('. ', '.<break time="600ms"/> ')
-                    text_with_pauses = text_with_pauses.replace('? ', '?<break time="800ms"/> ')
-                    text_with_pauses = text_with_pauses.replace('! ', '!<break time="600ms"/> ')
-
-                    # Send text to generate
-                    await elevenlabs_ws.send(json.dumps({
-                        "text": text_with_pauses[:1200],
-                        "flush": True
-                    }))
-
-                    # Stream audio chunks to frontend
-                    try:
-                        while True:
-                            response_data = await asyncio.wait_for(elevenlabs_ws.recv(), timeout=30.0)
-                            response_json = json.loads(response_data)
-
-                            if response_json.get("audio"):
-                                # Forward audio chunk to frontend
-                                await websocket.send_json({
-                                    "type": "audio",
-                                    "audio": response_json["audio"]
-                                })
-
-                            if response_json.get("isFinal"):
-                                break
-
-                    except asyncio.TimeoutError:
-                        await websocket.send_json({"type": "error", "message": "Audio generation timeout"})
-
-                    # Signal audio complete
-                    await websocket.send_json({"type": "audio_complete"})
+                # Audio generation is now handled by HeyGen on the frontend
+                # No need for ElevenLabs streaming
 
             elif message_type == "ping":
                 # Keep-alive
