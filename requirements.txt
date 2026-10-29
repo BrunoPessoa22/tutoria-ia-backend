@@ -1,9 +1,9 @@
 # Core
 fastapi==0.115.0
 uvicorn[standard]==0.32.0
-python-dotenv==1.0.1
+python-dotenv==1.2.2
 pydantic==2.9.2
-python-multipart==0.0.12
+python-multipart==0.0.32
 
 # AI Services
 anthropic==0.39.0
@@ -18,5 +18,5 @@ SQLAlchemy==2.0.36
 psycopg2-binary==2.9.10
 
 # Authentication (Phase 3)
-pyjwt==2.10.1
-cryptography==44.0.0
+pyjwt==2.15.1
+cryptography==50.0.2
